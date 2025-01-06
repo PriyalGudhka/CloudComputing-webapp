@@ -1,10 +1,5 @@
 Network Structures and Cloud Computing
 
-Name: Priyal Vimal Gudhka
-NU ID No.: 002747680
-Email Id: gudhka.p@northeastern.edu
-Assignment Number: 09
-
 Packer Commands
 
 1. packer init packer/gcp.pkr.hcl
