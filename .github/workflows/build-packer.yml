@@ -1,0 +1,190 @@
+name: Packer Build
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+
+env:
+  ENV: "dev"
+  DATABASE: "cloudAssignment"
+  PORT: ${{secrets.PORT}}
+  HOST: ${{ secrets.HOST}}
+  MYSQLUSERNAME: ${{secrets.MYSQLUSERNAME}}
+  PASSWORD: ${{ secrets.PASSWORD }}
+  DIALECT: "mysql"
+
+jobs:
+  packer-build:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Setting up Node.js
+      uses: actions/setup-node@v2
+      with:
+       node-version: "14"
+
+    - name: Configuring MySQL
+      run: |
+          sudo apt-get update	
+          sudo systemctl start mysql	
+          sudo systemctl status mysql	
+          mysql -u ${MYSQLUSERNAME} -p"${PASSWORD}"
+
+    - name: Install dependencies
+      run: |
+          echo "Installing Dependencies!!"   
+          npm install
+          echo "Dependency Installed"
+
+    - name: Running Test Files
+      run: |
+          echo "Starting to run integration tests"   
+          npm test
+          echo "Integration tests execution completed"
+
+    - name: Zip the artifact
+      run: |
+          zip -r webapp.zip ./
+          ls -lrth
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v2
+      with:
+          name: app-artifact
+          path: webapp.zip
+          
+    - name: 'Authenticate to Google Cloud'
+      id: 'auth'
+      uses: 'google-github-actions/auth@v2'
+      with:
+          credentials_json: '${{ secrets.ACCOUNT_KEY }}'
+
+    - name: 'Set up Cloud SDK'
+      uses: 'google-github-actions/setup-gcloud@v2'
+
+    - name: 'Use gcloud CLI'
+      run: |
+        gcloud auth activate-service-account --key-file=<(echo '${{ secrets.ACCOUNT_KEY }}')
+        gcloud auth list --filter=status:ACTIVE --format="value(account)"
+
+    - name: Install Packer
+      run: |
+          curl -o packer.zip https://releases.hashicorp.com/packer/1.7.6/packer_1.7.6_linux_amd64.zip
+          sudo unzip -o packer.zip -d /usr/local/bin/
+           
+    - name: "Initializing Packer"
+      run: |
+        echo "Initializing Packer"   
+        packer init packer/gcp.pkr.hcl
+        echo "Packer Initialized successfully"
+
+    - name: "Validating Packer"
+      run: |
+        echo "Validating Packer"   
+        packer validate packer/gcp.pkr.hcl
+        echo "Packer Validated successfully"
+
+    - name: "Building Packer"
+      if: success()
+      run: |
+        echo "Building Packer"   
+        packer build packer/gcp.pkr.hcl
+        echo "Packer Build successfully"
+
+    - name: Extracting Image ID from manifest.json
+      id: image-id
+      run: |
+        extracted_image_id=$(jq -r '.builds[0].artifact_id' manifest.json)
+        echo "::set-output name=extracted_image_id::$extracted_image_id"
+
+    - name: Use Image ID in Next Step
+      run: |
+        echo "Extracted Image ID: ${{ steps.image-id.outputs.extracted_image_id }}"
+ 
+    - name: Creating a startup script
+      run: |
+          cat << 'EOF' > startup-script.sh
+          #!/bin/bash
+          cat <<END_OF_FILE | sudo tee /opt/dist/webapp/.env > /dev/null
+          PORT=${{secrets.PORT}}
+          HOST=${{secrets.GCP_HOST}}
+          MYSQLUSERNAME=${{secrets.GCP_MYSQLUSERNAME}}
+          PASSWORD=${{secrets.GCP_PASSWORD }}
+          DIALECT=mysql
+          DATABASE=${{secrets.GCP_DATABASE}}
+          END_OF_FILE
+          sudo chown csye6225:csye6225 /opt/dist/webapp/.env
+          sudo systemctl restart WebApplication
+    - name: Creating a new instance template
+      id: new_instance_template
+      run: |
+          GCP_TEMPLATE_NAME="demo-yaml-template-$(date +%Y%m%d%H%M%S)"
+          PROJECT_ID="${{ secrets.PROJECT_ID }}"
+          REGION="${{ secrets.REGION }}"
+          gcloud compute instance-templates create $GCP_TEMPLATE_NAME \
+              --project=$PROJECT_ID \
+              --image=${{ steps.image-id.outputs.extracted_image_id }} \
+              --machine-type=${{secrets.GCP_MACHINE_TYPE}} \
+              --tags=${{secrets.TAGS}} \
+              --boot-disk-auto-delete \
+              --boot-disk-type="${{ secrets.DISK_TYPE }}" \
+              --boot-disk-size="${{ secrets.DISK_SIZE }}" \
+              --boot-disk-kms-key="${{ secrets.KMS_KEY }}" \
+              --boot-disk-kms-keyring="${{ secrets.KMS_KEY_RING }}" \
+              --instance-template-region=${{ secrets.REGION }} \
+              --region=${{ secrets.REGION}} \
+              --network=${{ secrets.NETWORK }} \
+              --subnet=${{  secrets.SUBNETWORK }} \
+              --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }} \
+              --scopes=logging-write,monitoring-write,https://www.googleapis.com/auth/pubsub \
+              --metadata=MYSQLUSERNAME=${{ secrets.GCP_MYSQLUSERNAME }},PASSWORD=${{ secrets.GCP_PASSWORD }},HOST=${{ secrets.GCP_HOST }},DATABASE=${{ secrets.GCP_DATABASE }} \
+              --metadata-from-file=startup-script=startup-script.sh
+          echo "New template $GCP_TEMPLATE_NAME created with image ${{ steps.image-id.outputs.extracted_image_id }}"
+          echo "::set-output name=template_name::$GCP_TEMPLATE_NAME"
+          echo "GCP_TEMPLATE_NAME=$GCP_TEMPLATE_NAME" >> $GITHUB_ENV
+          TEMPLATE_NAME_PATH="https://www.googleapis.com/compute/v1/projects/$PROJECT_ID/regions/$REGION/instanceTemplates/$GCP_TEMPLATE_NAME"
+          echo "TEMPLATE_NAME_PATH=$TEMPLATE_NAME_PATH" >> $GITHUB_ENV
+
+    - name: Configuring the managed instance group
+      id: managed_instance_group
+      run: |
+        REGION="${{ secrets.REGION }}"
+        MIG_GROUP_NAME="${{secrets.MIG_GROUP_NAME}}"
+        gcloud compute instance-groups managed set-instance-template \
+        $MIG_GROUP_NAME \
+        --template=${{env.TEMPLATE_NAME_PATH}} \
+        --region=$REGION \
+        --project=${{ secrets.PROJECT_ID }}
+
+    - name: Rolling updates to MIG
+      id: rolling_updates
+      run: |
+        MIG_GROUP_NAME="${{secrets.MIG_GROUP_NAME}}"
+        gcloud compute instance-groups managed rolling-action start-update $MIG_GROUP_NAME \
+        --version=template=${{env.TEMPLATE_NAME_PATH}} \
+        --region=${{ secrets.REGION }} \
+        --max-surge=3 \
+        --max-unavailable=0
+
+    - name: Checking the MIG to be updated
+      id: rolling_updates_version_target_reached
+      run: |
+        MIG_GROUP_NAME="${{secrets.MIG_GROUP_NAME}}"
+        gcloud compute instance-groups managed wait-until $MIG_GROUP_NAME \
+        --version-target-reached \
+        --region=${{ secrets.REGION }} 
+
+    - name: Checking the MIG to be stable
+      id: rolling_updates_stable
+      run: |
+        MIG_GROUP_NAME="${{secrets.MIG_GROUP_NAME}}"
+        gcloud compute instance-groups managed wait-until $MIG_GROUP_NAME \
+        --stable \
+        --region=${{ secrets.REGION }} 

@@ -1,0 +1,54 @@
+name: Run Integration Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+
+env:
+  ENV: "dev"
+  DATABASE: "cloudAssignment"
+  PORT: ${{secrets.PORT}}
+  HOST: ${{ secrets.HOST}}
+  MYSQLUSERNAME: ${{secrets.MYSQLUSERNAME}}
+  PASSWORD: ${{ secrets.PASSWORD }}
+  DIALECT: "mysql"
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Setting up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: "14"
+
+      - name: Debug Secrets
+        run: |
+          echo "ENV: ${ENV}"
+          echo "DATABASE: ${DATABASE}"
+          echo "MYSQLUSERNAME: ${MYSQLUSERNAME}"
+          echo "PASSWORD: ${PASSWORD}"
+
+      - name: Configuring MySQL
+        run: |
+          sudo apt-get update	
+          sudo systemctl start mysql	
+          sudo systemctl status mysql	
+          mysql -u ${MYSQLUSERNAME} -p"${PASSWORD}"
+
+      - name: Install dependencies
+        run: |
+          echo "Installing Dependencies!!"   
+          npm install
+          echo "Dependency Installed"
+
+      - name: Running Test Files
+        run: |
+          echo "Starting to run integration tests"   
+          npm test
+          echo "Integration tests execution completed"

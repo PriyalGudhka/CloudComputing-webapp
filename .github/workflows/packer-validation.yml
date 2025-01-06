@@ -1,0 +1,55 @@
+name: Packer Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  packer-validation:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Zip the artifact
+      run: |
+          zip -r webapp.zip ./
+          ls -lrth
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v2
+      with:
+          name: app-artifact
+          path: webapp.zip
+
+    - name: Setting up Packer
+      uses: hashicorp/setup-packer@main
+      id: setup
+      with:
+        packer-version: '1.10.1'  
+
+    - name: "Initializing Packer"
+      run: |
+        echo "Initializing Packer!"   
+        packer init packer/gcp.pkr.hcl
+        echo "Packer Initialized successfully"
+
+    - name: "Validating Packer"
+      run: |
+        echo "Validating Packer!"   
+        packer validate packer/gcp.pkr.hcl
+        echo "Packer Validated successfully"
+
+    - name: "Validating Packer Format"
+      run: |
+          validatedFormat=$(packer fmt -check packer/gcp.pkr.hcl)
+
+          if [ -n "$validatedFormat" ]; then
+            echo "Invalid format!"
+            exit 1
+          else
+            echo "Valid format!"
+          fi
+

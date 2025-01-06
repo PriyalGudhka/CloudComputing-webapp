@@ -1,0 +1,25 @@
+name: Install Dependencies
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  dependency-installation:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Setting up Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '14'   
+
+    - name: Install dependencies
+      run: |
+        echo "Installing Dependencies"   
+        npm install
+        echo "Dependency Installed"
